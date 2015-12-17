@@ -1,0 +1,331 @@
+#!/usr/bin/python
+# Local Variables:
+# mode: python
+# End:
+
+import os
+import re
+import fnmatch
+
+class tree_entry:
+    def __init__(self, name):
+        self.name = name;
+        self.type = 'bool'
+        self.value = None
+        self.depends = []
+
+    def add_depends(self, dep):
+        self.depends.append(dep)
+
+    def get_value(self):
+        return self.value
+
+    def set_value(self, val):
+        self.value = val
+
+    def get_type(self):
+        return self.type
+
+    def set_type(self, typ):
+        self.type = typ
+
+    def get_is_set(self):
+        if self.type != 'bool':
+            raise TypeError('Configuration ' + self.name + ' is not boolean: ' +
+                            self.type)
+        return self.type == 'bool' and self.value == True
+
+    def set_is_set(self, on):
+        if self.type != 'bool':
+            raise TypeError('Configuration ' + self.name + ' is not boolean: ' +
+                            (self.type or 'no-type'))
+        self.value = on
+
+class lines_set:
+    def __init__(self, fname):
+        kf = open(fname, 'r')
+        self.lines = kf.read().splitlines()
+        kf.close()
+        self.nlines = len(self.lines)
+        self.pos = 0
+        self.fname = fname
+
+    def get_file_name(self):
+        return self.fname
+
+    def next(self):
+        if self.eof():
+            return None
+        ln = self.lines[self.pos]
+        self.pos += 1
+        return ln
+
+    def curr(self):
+        if self.eof():
+            return None
+        return self.lines[self.pos]
+
+    def length(self):
+        return self.nlines
+
+    def seek_back(self, n):
+        if n > self.pos:
+            raise IndexError(self.get_context() +
+                             ': Cannot seek back that many lines: ' + n)
+        self.pos -= n
+        return self.pos
+
+    def rewind(self):
+        self.pos = 0;
+
+    def eof(self):
+        return self.pos >= self.nlines
+
+    def get_pos(self):
+        return self.pos
+
+    def get_context(self):
+        return self.fname + ':' + str(self.pos + 1)
+
+
+def find_files(directory, pattern):
+    for root, dirs, files in os.walk(directory):
+        for basename in files:
+            if fnmatch.fnmatch(basename, pattern):
+                filename = os.path.join(root, basename)
+                yield filename
+
+
+def build_ktree(root):
+    fname = os.path.join(root, 'Kconfig')
+    return parse_kconfig(root, dict(), fname)
+
+
+def skip_to_endif(lset, re_if, re_endif):
+    nest = 0
+    while not lset.eof():
+        line = lset.next()
+        m = re_endif.match(line)
+        if m:
+            if nest == 0:
+                break
+            nest -= 1
+            continue
+        m = re_if.match(line)
+        if m:
+            nest += 1
+            continue
+
+
+def is_option_enabled(tree, opt):
+    if opt not in tree:
+        return False
+    ke = tree[opt]
+    return ke.get_is_set()
+
+
+def string_var_replace(tree, str):
+    re_macro = re.compile('\$([A-Za-z0-9_]+)')
+    rstr = ''
+    while True:
+        m = re_macro.search(str)
+        if not m:
+            rstr += str
+            break
+        rstr += str[0:m.start()]
+        key = m.group(1)
+        if key in tree:
+            ke = tree[key]
+            if ke.get_value() is not None:
+                rstr += ke.get_value()
+        str = str[m.end():]
+    return rstr
+
+
+def next_token(str, re_token):
+    if len(str) == 0:
+        return None
+    if str[0] != '(':
+        m = re.match('[a-zA-Z0-9_]+', str)
+        if not m:
+            raise SyntaxError('Bad expression: ' + str)
+        return [m.group(0), str[m.end():]]
+    nest = 1
+    for i in range(1, len(str)):
+        if str[i] == '(':
+            nest += 1
+        elif str[i] == ')':
+            nest -= 1
+            if nest == 0:
+                return [str[1:i], str[i + 1:]]
+
+    raise SyntaxError('Mismatch parenthesis: ' + str)
+
+
+def want_bool(val):
+    if val == 'y':
+        return True;
+    elif val == 'n':
+        return False
+    else:
+        raise SyntaxError('Bad boolean expression value: ' + val)
+
+def parse_expression(tree, expr):
+    m = re.match('[a-zA-Z0-9_]+$', expr)
+    if m:
+        key = m.group(0)
+        if key not in tree:
+            raise SyntaxError('Missing config variable: ' + key)
+        ke = tree[key]
+        if ke.get_value() is None:
+            raise SyntaxError('Config variable is None: ' + key)
+        return ke.get_value()
+    inv = False
+    rem = None
+    if expr[0] == '!':
+        rem = next_token(expr[1:])
+        inv = True
+    else:
+        rem = next_token(expr)
+    if not rem:
+        raise SyntaxError('Bad expression: ' + expr)
+    value = parse_expression(tree, rem[0])
+    if inv:
+        if want_bool(value):
+            value = 'n'
+        else:
+            value = 'y'
+    expr = rem[1]
+    m = re.match('\s+\|\|\s*([^\s].*)', expr)
+    if m:
+        ovalue = parse_expression(tree, m.group(1))
+        if want_bool(value) or want_bool(ovalue):
+            value = 'y'
+        else:
+            value = 'n'
+    m = re.match('\s+&&\s*([^\s].*)', expr)
+    if m:
+        avalue = parse_expression(tree, m.group(1))
+        if want_bool(value) and want_bool(avalue):
+            value = 'y'
+        else:
+            value = 'n'
+
+
+
+
+
+
+    if not is_option_enabled(tree, bv):
+
+    return exv
+
+def parse_config_option(lset, root, tree, ke):
+    re_end = re.compile('[^\s]+')
+    re_string = re.compile('\s+string\s')
+    re_bool = re.compile('\s+bool\s')
+    re_defbool = re.compile('\s+def_bool\s+([^\s].*[^\s])\s*$')
+    re_int = re.compile('\s+int\s')
+    re_option = re.compile('\s+option\s+([^\n]+)')
+    re_depends = re.compile('\s+depends\s+on\s+([^\n]+)')
+    re_optenv = re.compile('env="([^"]+)"')
+    while not lset.eof():
+        line = lset.next()
+        m = re_end.match(line)
+        if m:
+            lset.seek_back(1)
+            break
+        m = re_string.match(line)
+        if m:
+            ke.set_type('string')
+            continue
+        m = re_bool.match(line)
+        if m:
+            ke.set_type('bool')
+            continue
+        m = re_defbool.match(line)
+        if m:
+            ke.set_type('bool')
+            bv = parse_expression(tree, m.group(1))
+            if bv == 'y':
+                ke.set_is_set(True)
+            elif bv == 'n':
+                ke.set_is_set(False)
+            else:
+                raise SyntaxError(lset.get_context() +
+                                  ': Invalid def_bool value: ' + (bv or 'None'))
+            continue
+        m = re_int.match(line)
+        if m:
+            ke.set_type('int')
+            continue
+        m = re_option.match(line)
+        if m:
+            ostr = m.group(1)
+            m = re_optenv.match(ostr)
+            if m:
+                if m.group(1) in os.environ:
+                    ke.set_value(os.environ[m.group(1)])
+                else:
+                    ke.set_value('')
+            continue
+        m = re_depends.match(line)
+        if m:
+            ke.add_depends(m.group(1))
+
+            continue
+
+
+def parse_kconfig(root, tree, fname):
+    print 'Parsing ' + fname
+    lset = lines_set(fname)
+    re_config = re.compile('(config|menuconfig)\s+([A-Z0-9_]+)')
+    re_if = re.compile('if\s+([^\s].*[^\s])\s*$')
+    re_endif = re.compile('endif\s')
+    re_source = re.compile('source\s+"([^"]+)"')
+    re_xsource = re.compile('source\s+([^\s]+)')
+    if_nest = 0
+    while not lset.eof():
+        line = lset.next()
+        m = re_config.match(line)
+        if m:
+            config = m.group(2)
+            if config in tree:
+                os.sys.stderr.write(lset.get_context() + '\n')
+                os.sys.stderr.write('Duplicate config: ' + config + '\n')
+            ke = tree_entry(config)
+            tree[config] = ke
+            parse_config_option(lset, root, tree, ke)
+            continue
+        m = re_if.match(line)
+        if m:
+            bv = parse_expression(tree, m.group(1))
+            if bv == 'n':
+                skip_to_endif(lset, re_if, re_endif)
+            else:
+                if_nest += 1
+            continue
+        m = re_endif.match(line)
+        if m:
+            if_nest -= 1
+            if if_nest < 0:
+                os.sys.stderr.write(lset.get_context() + '\n')
+                os.sys.stderr.write('Nested IF not matching: ' + str(if_nest) + '\n')
+                exit(2)
+            continue
+        m = re_source.match(line)
+        if not m:
+            m = re_xsource.match(line)
+        if m:
+            spath = string_var_replace(tree, m.group(1))
+            tree = parse_kconfig(root, tree, os.path.join(root, spath))
+            continue
+    if if_nest > 0:
+        os.sys.stderr.write(lset.get_context() + '\n')
+        os.sys.stderr.write('Nested IF not matching: ' + str(if_nest) + '\n')
+        exit(2)
+    return tree
+
+
+build_ktree('.')
+
